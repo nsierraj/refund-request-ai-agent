@@ -3,3 +3,5 @@ __pycache__/
 orders.db
 .DS_Store
 policy_index.json
+refund_history.csv
+fraud_model.joblib

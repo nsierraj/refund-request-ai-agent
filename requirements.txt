@@ -1,2 +1,3 @@
 ollama>=0.5
 strands-agents[ollama]>=1.62
+scikit-learn>=1.5
