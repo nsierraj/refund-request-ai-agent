@@ -1,6 +1,6 @@
-# Local AI Agent: Steps 1–8
+# Local AI Agent: Steps 1–9
 
-A customer support agent for a fake store, built on your Mac with no cloud account. Steps 1–3 get an LLM running, talking from code, and using its first tool. Step 4 turns it into an agent that handles a refund from start to finish. Step 5 rebuilds that agent with an agent framework. Step 6 gives it a written rulebook to look things up in. Step 7 adds a machine learning fraud check. Step 8 puts a real person in the loop.
+A customer support agent for a fake store, built on your Mac with no cloud account. Steps 1–3 get an LLM running, talking from code, and using its first tool. Step 4 turns it into an agent that handles a refund from start to finish. Step 5 rebuilds that agent with an agent framework. Step 6 gives it a written rulebook to look things up in. Step 7 adds a machine learning fraud check. Step 8 puts a real person in the loop. Step 9 lets you see inside every run with tracing.
 
 ## Setup (once)
 
@@ -246,6 +246,52 @@ New files:
 
 **The AWS connection:** this is the Step Functions "wait for a human" pattern (a task token, `waitForTaskToken`). The workflow pauses, a reviewer acts in a console or app, and the workflow resumes. The `reviews` table would be DynamoDB, `review.py` would be an internal web page, and "press Enter" would be an EventBridge event or SNS message that wakes the conversation back up.
 
+## Step 9: See inside every run (tracing)
+
+```bash
+# Once: start Phoenix, a tracing dashboard, in OrbStack
+docker run -d --name phoenix -p 6006:6006 -p 4317:4317 arizephoenix/phoenix:14.9.1
+pip install -r requirements.txt    # adds the tracing pieces
+
+python setup_db.py
+python step9_traced.py             # terminal 1
+python review.py                   # terminal 2, same as Step 8
+open http://localhost:6006         # pick the "refund-agent" project
+```
+
+Later: `docker stop phoenix` and `docker start phoenix`. Your traces survive a stop, but not `docker rm`.
+
+So far the only record of what the agent did is what scrolled past in your terminal. Tracing records every step as a **span**: a named, timed step with details attached (model, tokens, tool input and output) and a parent. One customer message becomes one **trace**, a tree of spans:
+
+```
+invoke_agent                  the whole turn
+├─ execute_event_loop_cycle   think → act, once per loop
+│  ├─ chat                    a model call: prompt, reply, tokens, time
+│  ├─ execute_tool            a tool call: input, output, time
+│  └─ review_gate             our own span: allowed or held?
+└─ execute_event_loop_cycle
+   └─ chat                    the final answer
+```
+
+New files:
+- `tracing.py` connects three pieces with OpenTelemetry, the standard most tracing tools speak. Strands already creates spans. An OpenInference processor labels them so Phoenix knows which are model calls, tools and agents. An OTLP exporter sends them to Phoenix. If Phoenix isn't running, the agent still works, just without traces.
+- `step9_traced.py` is the Step 8 agent plus tracing, one span of our own around the review gate, a session ID so a whole conversation groups together, and a `[usage]` line after every turn.
+
+**Things to look for in Phoenix:**
+- *Where does the time go?* Open a trace and compare the `chat` spans to everything else. On a laptop, the model is almost always the slow part.
+- *Tokens grow every turn.* The model has no memory, so each turn resends the whole conversation, system prompt and tool list. Watch `tokens in` climb in the `[usage]` line. That's what you pay for in the cloud. (Phoenix's agent span shows a running total for the conversation; the terminal shows one turn.)
+- *What did the model actually see?* Click a `chat` span: the full prompt, including the tool descriptions built from your docstrings.
+- *Cold start.* The first refund's `review_gate` span is slower than later ones, because it loads the fraud model. Same idea as a Lambda cold start.
+- *Sessions view.* Every turn of one conversation, including the reviewer's decision being passed on, under one session ID.
+
+**Try:**
+- Run the same message with `qwen3:14b` and `llama3.1:8b` (`AGENT_MODEL=llama3.1:8b python step9_traced.py`) and compare the traces: number of model calls, tokens, time, and whether it skipped `search_policy` or `score_refund_risk`.
+- Find a run where the agent did something wrong, then use the trace to find the step where it went wrong. That's how teams debug agents.
+- Estimate cloud cost: look up current per-million-token prices for the Bedrock model you'd use, then `PRICE_IN=<input price> PRICE_OUT=<output price> python step9_traced.py`.
+- Trim the system prompt or drop a tool you don't need, and see what it does to tokens per turn.
+
+**The AWS connection:** this is AgentCore Observability. Agents on AgentCore send the same OpenTelemetry spans to CloudWatch (GenAI observability dashboards and X-Ray traces). Swap the exporter's endpoint and the same code can send traces to CloudWatch, Datadog or Langfuse instead of Phoenix.
+
 ## The orders
 
 | ID | Status | Price | Why it's there |
@@ -275,7 +321,10 @@ Most of these matter later, when the agent gets refund rules (Step 4) and a frau
 | `train_fraud_model.py` + `fraud.py` | SageMaker training job + endpoint |
 | `FraudGate` hook | Check in the tool's Lambda, or an AgentCore policy |
 | `reviews` table + `review.py` | Step Functions `waitForTaskToken` + DynamoDB + an internal review app |
+| Phoenix + `tracing.py` | AgentCore Observability, CloudWatch and X-Ray |
 
-## Next: Step 9
+## Where to go from here
 
-The agent now makes a lot of decisions across many tools, and the only record is what scrolls past in your terminal. Step 9 adds tracing: every model call, tool call, token count and timing in a dashboard you run locally, so you can see what happened, how long it took and what it cost.
+You've built every piece of the AWS refund agent on your Mac. Natural next steps:
+- **Evaluate it.** Turn the prompts you've been typing into a test set that runs automatically and scores each answer, so you know when a prompt or model change makes things worse.
+- **Move it to AWS.** Swap `OllamaModel` for a Bedrock model, put the tools behind Lambda, and deploy the Strands agent to AgentCore Runtime. Terraform for the infrastructure.
