@@ -111,6 +111,12 @@ def issue_refund(order_id: str, reason: str) -> str:
                            "error": "Needs human approval. Refund NOT issued. "
                                     "Tell the customer a team member will review it."})
 
+    return json.dumps(record_refund(order, reason))
+
+
+def record_refund(order: dict, reason: str) -> dict:
+    """Write the refund. Not a tool: the agent reaches it only through
+    issue_refund's checks, and a human reviewer reaches it from review.py."""
     refund_id = "R-" + uuid.uuid4().hex[:6].upper()
     con = sqlite3.connect(DB_PATH)
     con.execute("""CREATE TABLE IF NOT EXISTS refunds (
@@ -123,9 +129,8 @@ def issue_refund(order_id: str, reason: str) -> str:
                 (order["order_id"],))
     con.commit()
     con.close()
-
-    return json.dumps({"refunded": True, "refund_id": refund_id,
-                       "amount": order["price"], "order_id": order["order_id"]})
+    return {"refunded": True, "refund_id": refund_id,
+            "amount": order["price"], "order_id": order["order_id"]}
 
 
 # Name -> function, so the loop can run whatever the model asks for.

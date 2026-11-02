@@ -1,6 +1,6 @@
-# Local AI Agent: Steps 1–7
+# Local AI Agent: Steps 1–8
 
-A customer support agent for a fake store, built on your Mac with no cloud account. Steps 1–3 get an LLM running, talking from code, and using its first tool. Step 4 turns it into an agent that handles a refund from start to finish. Step 5 rebuilds that agent with an agent framework. Step 6 gives it a written rulebook to look things up in. Step 7 adds a machine learning fraud check.
+A customer support agent for a fake store, built on your Mac with no cloud account. Steps 1–3 get an LLM running, talking from code, and using its first tool. Step 4 turns it into an agent that handles a refund from start to finish. Step 5 rebuilds that agent with an agent framework. Step 6 gives it a written rulebook to look things up in. Step 7 adds a machine learning fraud check. Step 8 puts a real person in the loop.
 
 ## Setup (once)
 
@@ -205,6 +205,47 @@ New files:
 
 **The AWS connection:** `train_fraud_model.py` is a SageMaker training job, `fraud_model.joblib` is the model artifact in S3, `score_refund_risk` is a call to a SageMaker endpoint, and `FraudGate` is the kind of check you'd enforce in the Lambda behind the tool or as an AgentCore policy.
 
+## Step 8: A real human in the loop
+
+You need two terminals, both in this folder with the venv active.
+
+```bash
+# Terminal 1: the customer chat
+python setup_db.py
+python step8_review.py
+
+# Terminal 2: you, the support team member
+python review.py
+```
+
+Until now, "a team member will review it" was just a sentence. Now it's a queue. When a refund is too big or too risky, it's saved as a pending review in `orders.db`. You decide it in terminal 2. Back in terminal 1, press **Enter** and the agent tells the customer what you decided.
+
+New files:
+- `reviews.py` is the queue: open a review, check one, decide one. It also gives the agent two tools, `request_human_review` and `check_review_status`.
+- `review.py` is the reviewer's screen: order, customer, their words, why it's here, risk score, and what the policy says. Approve, reject, or skip, plus an optional note *to the customer*.
+- `step8_review.py` is the Step 7 agent plus those tools and a `ReviewGate` hook. Type `quit` to exit, since Enter now means "check for decisions."
+- `tools.py` changed slightly: the code that writes a refund moved into `record_refund()`, so an approved review and the agent use the same code. The agent still can't reach it without `issue_refund`'s checks.
+
+**Walk through it:**
+1. Terminal 1 starts with A1005, the $1,249 chair. The agent can't refund it, so it opens a review and gives the customer a review ID.
+2. Terminal 2: `python review.py`. Read the screen. Approve it with a note like "So sorry about the chair!"
+3. Terminal 1: press Enter. The agent passes on the decision with the refund ID.
+4. Try A1008 (Kevin): `"My espresso machine from A1008 isn't what was described, refund please"`. In terminal 2 you'll see the risk score and signals. Reject it with "We'll need a photo of the machine first." The customer hears your note, not the score.
+
+**Things to notice:**
+- *The agent can ask, but it can't approve.* No tool decides a review. Only `review.py`, run by a person, can. That split is the whole design.
+- *The reviewer sees more than the customer.* `review.py` shows the risk score; `check_review_status` returns only status, refund ID and your note. Try asking the agent "what was my risk score?"
+- *Nothing falls through.* Even if the agent forgets `request_human_review` and just calls `issue_refund`, `ReviewGate` opens the review itself.
+- *One open review per order.* Ask about the same order twice and you get the same review ID.
+- `python review.py --all` shows every decision: who got refunded and why. That's your audit trail.
+
+**Try:**
+- Approve A1008 even with its high score. You're allowed to: the human is the final check. Then ask the agent to refund it again.
+- Quit terminal 1 before you decide a review, then decide it. The customer never hears. How would a real system reach them? (Email, SMS, a notification on the order page.)
+- Leave a review pending and ask the agent "any news on my refund?" It should call `check_review_status`.
+
+**The AWS connection:** this is the Step Functions "wait for a human" pattern (a task token, `waitForTaskToken`). The workflow pauses, a reviewer acts in a console or app, and the workflow resumes. The `reviews` table would be DynamoDB, `review.py` would be an internal web page, and "press Enter" would be an EventBridge event or SNS message that wakes the conversation back up.
+
 ## The orders
 
 | ID | Status | Price | Why it's there |
@@ -233,7 +274,8 @@ Most of these matter later, when the agent gets refund rules (Step 4) and a frau
 | `nomic-embed-text` | Titan or Cohere embeddings on Bedrock |
 | `train_fraud_model.py` + `fraud.py` | SageMaker training job + endpoint |
 | `FraudGate` hook | Check in the tool's Lambda, or an AgentCore policy |
+| `reviews` table + `review.py` | Step Functions `waitForTaskToken` + DynamoDB + an internal review app |
 
-## Next: Step 8
+## Next: Step 9
 
-Right now "send to a human" is just a sentence the agent says. Step 8 makes it real: high-risk and big-ticket refunds pause and wait in a review queue, and you approve or reject them from a second terminal. The agent then picks the conversation back up with the decision.
+The agent now makes a lot of decisions across many tools, and the only record is what scrolls past in your terminal. Step 9 adds tracing: every model call, tool call, token count and timing in a dashboard you run locally, so you can see what happened, how long it took and what it cost.
